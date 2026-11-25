@@ -1,10 +1,12 @@
 import { useEffect, useRef } from "react";
 
-// Резиновая типографика: экран из крупного текста, каждый символ на пружине.
-// Текст изгибается вокруг курсора, по клику — ударная волна, без мыши курсор
-// заменяет «призрак», чтобы страница жила сама по себе.
+// Резиновая типографика: контейнер с крупным текстом, каждый символ живёт
+// на пружине. Курсор расталкивает буквы, клик — ударная волна, без мыши
+// гуляет «призрак». Компонент встраивается в любой блок нужной высоты
+// (props: phrases, rows, repel, radius, ghost, waves, breathe) и ставится
+// на паузу, когда блок вне экрана.
 
-const PHRASES = [
+const DEFAULT_PHRASES = [
   "ТЕКСТ ИЗГИБАЕТСЯ",
   "ВОКРУГ КУРСОРА",
   "ЖИВЫЕ ИНТЕРФЕЙСЫ",
@@ -16,17 +18,15 @@ const PHRASES = [
 ];
 
 const BG = "#0b0709";
-const BASE = [245, 233, 216]; // обычный цвет текста
-const ACCENT = [255, 205, 90]; // цвет у курсора
+const BASE = [245, 233, 216];
+const ACCENT = [255, 205, 90];
 const STEPS = 12;
 
-// настройка физики
-const STIFFNESS = 0.085; // жёсткость пружины
-const DAMPING = 0.84; // затухание
-const REPEL = 0.55; // сила отталкивания (доля радиуса)
-const WAVE_SPEED = 1400; // скорость ударной волны, px/с
-const WAVE_WIDTH = 90; // толщина фронта, px
-const WAVE_KICK = 26; // импульс волны
+const STIFFNESS = 0.085;
+const DAMPING = 0.84;
+const WAVE_SPEED = 1400;
+const WAVE_WIDTH = 90;
+const WAVE_KICK = 26;
 
 const COLORS = Array.from({ length: STEPS + 1 }, (_, i) => {
   const t = i / STEPS;
@@ -36,30 +36,41 @@ const COLORS = Array.from({ length: STEPS + 1 }, (_, i) => {
 
 const font = (s) => `900 ${s}px Arial, "Segoe UI", sans-serif`;
 
-export default function TextWarp() {
-  const ref = useRef(null);
+export default function TextWarp({
+  phrases = DEFAULT_PHRASES,
+  rows = null,
+  repel = 0.55,
+  radius = null,
+  ghost = true,
+  waves = true,
+  breathe = 3,
+}) {
+  const wrapRef = useRef(null);
+  const cvRef = useRef(null);
 
   useEffect(() => {
-    const cv = ref.current;
+    const wrap = wrapRef.current;
+    const cv = cvRef.current;
     const ctx = cv.getContext("2d");
     let raf = 0;
     let glyphs = [];
-    let waves = [];
+    let waveList = [];
     let W = 0;
     let H = 0;
     let dpr = 1;
-    let t0 = performance.now();
+    let visible = true;
     const mouse = { x: -1e4, y: -1e4, real: false };
     let smx = 0;
     let smy = 0;
     let smInit = false;
+    const t0 = performance.now();
 
     function rebuild() {
       glyphs = [];
-      const rows = Math.max(3, Math.round(H / Math.max(48, Math.min(110, H / 7))));
-      const step = H / rows;
-      for (let r = 0; r < rows; r++) {
-        const phrase = PHRASES[r % PHRASES.length];
+      const rowsN = rows ?? Math.max(3, Math.round(H / Math.max(48, Math.min(110, H / 7))));
+      const step = H / rowsN;
+      for (let r = 0; r < rowsN; r++) {
+        const phrase = phrases[r % phrases.length];
         ctx.font = font(step * 0.86);
         const m = ctx.measureText(phrase).width || 1;
         const size = step * 0.86 * Math.min((W * 0.94) / m, 1.5);
@@ -73,7 +84,7 @@ export default function TextWarp() {
             ch,
             size,
             row: r,
-            hx: x + cw / 2, // «домашняя» точка
+            hx: x + cw / 2,
             hy: y,
             x: x + cw / 2,
             y,
@@ -87,12 +98,10 @@ export default function TextWarp() {
 
     function fit() {
       dpr = window.devicePixelRatio || 1;
-      W = window.innerWidth;
-      H = window.innerHeight;
+      W = Math.max(1, wrap.clientWidth);
+      H = Math.max(1, wrap.clientHeight);
       cv.width = Math.max(1, Math.floor(W * dpr));
       cv.height = Math.max(1, Math.floor(H * dpr));
-      cv.style.width = `${W}px`;
-      cv.style.height = `${H}px`;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
@@ -101,30 +110,40 @@ export default function TextWarp() {
       ctx.fillRect(0, 0, W, H);
     }
 
+    const ro = new ResizeObserver(() => fit());
+    ro.observe(wrap);
+    const io = new IntersectionObserver(([e]) => {
+      visible = e.isIntersecting;
+    });
+    io.observe(wrap);
+
     const onMove = (e) => {
       mouse.x = e.clientX;
       mouse.y = e.clientY;
       mouse.real = true;
     };
     const onDown = (e) => {
-      waves.push({ x: e.clientX, y: e.clientY, t: performance.now() });
+      if (!waves) return;
+      const rect = cv.getBoundingClientRect();
+      waveList.push({ x: e.clientX - rect.left, y: e.clientY - rect.top, t: performance.now() });
     };
-
-    fit();
-    window.addEventListener("resize", fit);
     window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerdown", onDown);
+    wrap.addEventListener("pointerdown", onDown);
 
     function frame(now) {
       raf = requestAnimationFrame(frame);
+      if (!visible) return;
       const t = (now - t0) / 1000;
+      const rect = cv.getBoundingClientRect();
 
-      // курсор: реальный или «призрак», пока мышь не двигали
-      let mx = mouse.x;
-      let my = mouse.y;
-      if (!mouse.real) {
+      let mx;
+      let my;
+      if (!mouse.real && ghost) {
         mx = W / 2 + Math.sin(t * 0.7) * W * 0.3;
         my = H / 2 + Math.sin(t * 1.13 + 1.3) * H * 0.28;
+      } else {
+        mx = mouse.x - rect.left;
+        my = mouse.y - rect.top;
       }
       if (!smInit) {
         smx = mx;
@@ -134,22 +153,20 @@ export default function TextWarp() {
       smx += (mx - smx) * 0.25;
       smy += (my - smy) * 0.25;
 
-      waves = waves.filter((w) => now - w.t < 1200);
+      waveList = waveList.filter((w) => now - w.t < 1200);
 
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.fillStyle = BG;
       ctx.fillRect(0, 0, W, H);
 
-      const R = Math.min(W, H) * 0.22;
+      const R = radius ?? Math.min(W, H) * 0.22;
       const R2 = R * R;
 
       for (const g of glyphs) {
-        // дом + лёгкое дыхание
         const wob = Math.sin(t * 1.4 + g.hx * 0.012 + g.row * 0.8);
         let tx = g.hx;
-        let ty = g.hy + wob * 3;
+        let ty = g.hy + wob * breathe;
 
-        // отталкивание от курсора
         const dx = tx - smx;
         const dy = ty - smy;
         const d2 = dx * dx + dy * dy;
@@ -157,13 +174,12 @@ export default function TextWarp() {
         if (d2 < R2) {
           const d = Math.sqrt(d2) || 1;
           prox = 1 - d / R;
-          const push = prox * prox * R * REPEL;
+          const push = prox * prox * R * repel;
           tx += (dx / d) * push;
           ty += (dy / d) * push;
         }
 
-        // ударные волны от кликов
-        for (const w of waves) {
+        for (const w of waveList) {
           const age = (now - w.t) / 1000;
           const rr = age * WAVE_SPEED;
           const wx = g.hx - w.x;
@@ -177,7 +193,6 @@ export default function TextWarp() {
           }
         }
 
-        // пружина
         g.vx += (tx - g.x) * STIFFNESS;
         g.vy += (ty - g.y) * STIFFNESS;
         g.vx *= DAMPING;
@@ -199,16 +214,16 @@ export default function TextWarp() {
     raf = requestAnimationFrame(frame);
     return () => {
       cancelAnimationFrame(raf);
-      window.removeEventListener("resize", fit);
+      ro.disconnect();
+      io.disconnect();
       window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerdown", onDown);
+      wrap.removeEventListener("pointerdown", onDown);
     };
-  }, []);
+  }, [phrases, rows, repel, radius, ghost, waves, breathe]);
 
   return (
-    <canvas
-      ref={ref}
-      style={{ display: "block", position: "fixed", inset: 0, background: BG }}
-    />
+    <div ref={wrapRef} className="warpbox">
+      <canvas ref={cvRef} />
+    </div>
   );
 }
